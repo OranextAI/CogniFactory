@@ -4,6 +4,7 @@
 **CORS:** open for all origins on `/api/*` — you can call from any frontend without proxy.
 
 This doc covers everything a frontend dev needs to:
+
 1. Pull the list of sensors from the database.
 2. Wire each sensor card / icon to a real DB sensor.
 3. Add an **"Analyser avec IA"** button per sensor that returns a French diagnostic report.
@@ -64,6 +65,7 @@ Returns the sensors the dashboard is currently scoped to (configurable via the `
 ```
 
 **Use this**:
+
 - `id` → pass this to **every other sensor-specific endpoint**. This is the canonical sensor identifier.
 - `name`, `type`, `unit`, `location` → display on the card.
 - `status` → `"Actif"` or `"Inactif"` (derived: have we seen events in the last 365 days; tunable via `DASHBOARD_ACTIVE_WINDOW_HOURS`).
@@ -145,14 +147,14 @@ Content-Type: application/json
 
 If your frontend stores sensors by `device_id`, `attribute_id`, or a name, the endpoint accepts any of these (first non-empty wins):
 
-| Payload | Resolution | Notes |
-|---|---|---|
-| `{ "sensor_id": 88 }` | direct | canonical = `device_attributes.id` from `/api/sensors` |
-| `{ "device_id": 66, "attribute_id": 31 }` | exact | unambiguous |
-| `{ "iddevice": 66, "idattribute": 31 }` | exact | snake_case alias (Postgres column names) |
-| `{ "device_id": 66 }` | unique only | resolves only if device 66 has exactly one attribute |
-| `{ "attribute_id": 31 }` | unique only | resolves only if exactly one device produces attribute 31 |
-| `{ "name": "Ora_Humidity" }` | unique only | matches `device.name` via ILIKE; single match required |
+| Payload                                     | Resolution  | Notes                                                     |
+| ------------------------------------------- | ----------- | --------------------------------------------------------- |
+| `{ "sensor_id": 88 }`                     | direct      | canonical =`device_attributes.id` from `/api/sensors` |
+| `{ "device_id": 66, "attribute_id": 31 }` | exact       | unambiguous                                               |
+| `{ "iddevice": 66, "idattribute": 31 }`   | exact       | snake_case alias (Postgres column names)                  |
+| `{ "device_id": 66 }`                     | unique only | resolves only if device 66 has exactly one attribute      |
+| `{ "attribute_id": 31 }`                  | unique only | resolves only if exactly one device produces attribute 31 |
+| `{ "name": "Ora_Humidity" }`              | unique only | matches `device.name` via ILIKE; single match required  |
 
 Anything else returns a **404 with a hint**:
 
@@ -210,12 +212,12 @@ The text is **Markdown** — render with `react-markdown` / `marked` / `markdown
 
 **Errors:**
 
-| Code | Body | When |
-|---|---|---|
-| 400 | `{"error":"Erreur: sensor_id manquant."}` | Body missing `sensor_id` |
-| 400 | `{"error":"Aucune donnée disponible..."}` | No events for that sensor |
-| 404 | `{"error":"Capteur non trouvé."}` | `sensor_id` doesn't exist |
-| 500 | `{"error":"..."}` | Ollama down / DB error |
+| Code | Body                                         | When                        |
+| ---- | -------------------------------------------- | --------------------------- |
+| 400  | `{"error":"Erreur: sensor_id manquant."}`  | Body missing `sensor_id`  |
+| 400  | `{"error":"Aucune donnée disponible..."}` | No events for that sensor   |
+| 404  | `{"error":"Capteur non trouvé."}`         | `sensor_id` doesn't exist |
+| 500  | `{"error":"..."}`                          | Ollama down / DB error      |
 
 **Timing:**
 
@@ -366,6 +368,131 @@ That's the complete loop: list → bind button → call AI → render markdown.
 
 Lets a user ask a question in plain French about production data; the backend introspects the live schema of a Postgres DB they supply, asks the LLM to write a SQL `SELECT`, executes it read-only, then asks the LLM to summarise the rows.
 
+### High-level flow
+
+```mermaid
+sequenceDiagram
+    actor U as User
+    participant FE as Frontend<br/>(Assistant page)
+    participant API as Backend Flask<br/>/api/ask-production
+    participant OL as Ollama<br/>(qwen2.5vl on VM)
+    participant PG as User's Postgres DB
+
+    U->>FE: 1. Toggles "Mode Production"<br/>+ enters DB config + question
+    FE->>API: 2. POST { question, db_config }
+    API->>PG: 3. Open READ-ONLY conn<br/>statement_timeout = 15s
+    API->>PG: 4. Introspect information_schema<br/>(cached 5 min per host)
+    PG-->>API: tables + columns + FKs
+    API->>OL: 5. Prompt = schema + question<br/>"Write one SELECT only"
+    OL-->>API: SQL query
+    API->>API: 6. Safety filter<br/>(SELECT/WITH only, no DDL/DML)
+    API->>PG: 7. Execute SQL
+    PG-->>API: Result rows (or error)
+    Note over API,OL: On SQL error → auto-retry once<br/>with the Postgres error fed back
+    API->>OL: 8. Question + SQL + rows<br/>"Summarize in French"
+    OL-->>API: Natural-language answer
+    API-->>FE: { answer, sql, rows, row_count, model }
+    FE-->>U: 9. Render answer<br/>+ collapsible "Voir le SQL"
+```
+
+### Decision tree (what happens on errors)
+
+```mermaid
+flowchart TD
+    Q[User question] --> CONN{Postgres<br/>connection OK?}
+    CONN -- no --> E1[400: connection error]
+    CONN -- yes --> INTRO[Introspect schema<br/>SELECT FROM information_schema]
+    INTRO --> P1[Prompt 1: NL → SQL<br/>temperature 0.0]
+    P1 --> EXTRACT[Extract SQL<br/>from fenced code block]
+    EXTRACT --> EMPTY{SQL<br/>found?}
+    EMPTY -- no --> E2[422: LLM didn't return SQL]
+    EMPTY -- yes --> SAFE{Passes safety filter?<br/>only SELECT/WITH<br/>no DROP/INSERT/etc}
+    SAFE -- no --> E3[400: SQL refused]
+    SAFE -- yes --> LIMIT[Auto-add LIMIT 200]
+    LIMIT --> EXEC1[Execute on Postgres]
+    EXEC1 --> ERR1{Postgres error?}
+    ERR1 -- no --> SUMM
+    ERR1 -- yes --> REPAIR[Prompt 2: repair<br/>show error + original SQL<br/>temperature 0.4]
+    REPAIR --> EXTRACT2[Extract SQL]
+    EXTRACT2 --> EXEC2[Execute again]
+    EXEC2 --> ERR2{Still errors?}
+    ERR2 -- yes --> E4[400: error + both attempts]
+    ERR2 -- no --> SUMM[Prompt 3: NL summary<br/>question + SQL + first 40 rows]
+    SUMM --> RET[200: answer + sql + rows + row_count]
+```
+
+### What the LLM actually sees
+
+When the model writes SQL, its prompt contains three blocks:
+
+```
+1. SYSTEM RULES
+   - Use only tables that appear in "=== TABLE: ... ==="
+   - Use only columns listed under each table
+   - No INSERT/UPDATE/DELETE/DROP/ALTER
+   - Return one ```sql ... ``` block only
+
+2. LIVE SCHEMA (built fresh from information_schema, cached 5 min)
+   === TABLE: production_checkpoints ===  -- Atomic production logs
+   Columns:
+     - id (uuid)
+     - order_item_id (uuid)
+     - at (timestamp with time zone)
+     - qty_done (integer)
+     - minutes_spent (integer)
+     - station (text)
+     ...
+   Foreign keys: order_item_id->order_items.id
+
+   === TABLE: orders ===
+   Columns:
+     - id (uuid)
+     - order_no (text)
+     - status (text)
+     ...
+   (53 tables total)
+
+3. USER QUESTION
+   "Combien de checkpoints avons-nous au total ?"
+```
+
+After SQL executes, a **second** prompt asks the LLM to convert rows back into natural language:
+
+```
+1. The original question (verbatim)
+2. The SQL that ran
+3. The first 40 result rows as JSON (≤ 6 KB)
+4. Instruction: "Réponds en français, 3-8 phrases,
+   cite des chiffres précis, si vide dis-le."
+```
+
+So the model never invents data — every figure in the answer traces back to a real row in your DB. You can verify by clicking **"Voir le SQL"** under the response and running the same SQL with `psql`.
+
+### Inspect the prompt the LLM actually receives
+
+```bash
+curl -sS -X POST http://20.51.200.142:5000/api/production/schema-preview \
+  -H "Content-Type: application/json" \
+  -d '{"db_config":{...}}' | python -m json.tool
+```
+
+Returns `{ table_count, tables[], digest_chars, digest_truncated, digest }`.
+
+- `digest_truncated: false` → the LLM sees the **full** schema.
+- `digest_truncated: true` → some tables at the end are clipped; bump `[:18000]` in `app.py`.
+- The `digest` field is the **literal text** sent to Ollama.
+
+### Component responsibilities
+
+| Where                                                        | Job                                                                                                                                                  |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`Assistant.jsx` (Frontend)**                       | UI toggle, DB form, sends `POST /api/ask-production`, renders the answer + collapsible SQL. Never touches Postgres directly.                       |
+| **`/api/ask-production` (Flask)**                    | Opens read-only PG conn → introspects → prompts Ollama → validates → executes → prompts Ollama again → returns. Pure orchestrator.             |
+| **`/api/production/schema-preview`**                 | Pure debug helper: dumps the digest the LLM would see. No LLM call.                                                                                  |
+| **`_validate_sql_safe` + `_ensure_limit`**         | Safety net — even if the LLM tried something destructive, this rejects it before it ever hits Postgres.                                             |
+| **Postgres `READ ONLY` + `statement_timeout=15s`** | Final safety net at the database layer — even a bad SQL can't write or hang the DB.                                                                 |
+| **Ollama (`qwen2.5vl`)**                             | Stateless. Two calls per question (SQL generation + answer summarization). Knows the schema only from the prompt; nothing persists between requests. |
+
 ### `POST /api/test-db-connection`
 
 Quick credential check before opening the chat.
@@ -413,6 +540,7 @@ Content-Type: application/json
 ```
 
 **Pipeline (per request):**
+
 1. Open a **read-only** Postgres connection with `statement_timeout = 15s`.
 2. Introspect tables/columns/FKs from `information_schema` (cached 5 min per host).
 3. Send schema + question to Ollama (`qwen2.5vl`) → expect a `SELECT`.
@@ -472,7 +600,6 @@ Other good options if you have disk: `sqlcoder:7b`, `codellama:13b-instruct`, `m
   GRANT SELECT ON ALL TABLES IN SCHEMA public TO chat_reader;
   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO chat_reader;
   ```
-
 - The frontend stores **everything except the password** in `localStorage` (key `cogni.productionDb.v1`). Password is required every session.
 
 ### Frontend integration (already done in the React app)
@@ -487,13 +614,13 @@ To wire this into another frontend (e.g. your other app), call `/api/test-db-con
 
 These exist on the same backend; use only if relevant:
 
-| Endpoint | What it does |
-|---|---|
-| `GET  /api/videos` | List demo videos on the server (returns `[{ name, path, size }]`) |
-| `GET  /videos/<filename>` | Stream a video file directly (works in `<video src=…>`) |
+| Endpoint                               | What it does                                                                                                                                                             |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET  /api/videos`                   | List demo videos on the server (returns `[{ name, path, size }]`)                                                                                                      |
+| `GET  /videos/<filename>`            | Stream a video file directly (works in `<video src=…>`)                                                                                                               |
 | `POST /api/analyze-video-screenshot` | Send a JPEG frame as multipart `frame_image` → Ollama vision (qwen2.5vl) returns a French scene description. 10–20 s. Used by the camera-icon button on video cards. |
-| `POST /api/generate-summary` | LLM summary for a *batch* of sensors. Send `{ "sensors": [<sensor objects from /api/sensors>] }`. Returns `{ "summary": "..." }`. |
-| `POST /api/ask` | Chat with the LLM. `{ "contents": [{ "parts": [{ "text": "..." }] }], "use_rag": false }` |
+| `POST /api/generate-summary`         | LLM summary for a*batch* of sensors. Send `{ "sensors": [<sensor objects from /api/sensors>] }`. Returns `{ "summary": "..." }`.                                   |
+| `POST /api/ask`                      | Chat with the LLM.`{ "contents": [{ "parts": [{ "text": "..." }] }], "use_rag": false }`                                                                               |
 
 ---
 
