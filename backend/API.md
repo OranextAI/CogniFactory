@@ -372,53 +372,52 @@ Lets a user ask a question in plain French about production data; the backend in
 
 ```mermaid
 sequenceDiagram
-    actor U as User
-    participant FE as Frontend<br/>(Assistant page)
-    participant API as Backend Flask<br/>/api/ask-production
-    participant OL as Ollama<br/>(qwen2.5vl on VM)
-    participant PG as User's Postgres DB
+    participant U as User
+    participant FE as Frontend
+    participant API as Backend Flask
+    participant OL as Ollama qwen2.5vl
+    participant PG as User Postgres DB
 
-    U->>FE: 1. Toggles "Mode Production"<br/>+ enters DB config + question
-    FE->>API: 2. POST { question, db_config }
-    API->>PG: 3. Open READ-ONLY conn<br/>statement_timeout = 15s
-    API->>PG: 4. Introspect information_schema<br/>(cached 5 min per host)
+    U->>FE: 1. Question + DB config (Mode Production)
+    FE->>API: 2. POST /api/ask-production
+    API->>PG: 3. Open read-only conn (15s timeout)
+    API->>PG: 4. Introspect information_schema (cached 5min)
     PG-->>API: tables + columns + FKs
-    API->>OL: 5. Prompt = schema + question<br/>"Write one SELECT only"
+    API->>OL: 5. Prompt = schema + question
     OL-->>API: SQL query
-    API->>API: 6. Safety filter<br/>(SELECT/WITH only, no DDL/DML)
+    API->>API: 6. Safety filter (SELECT/WITH only)
     API->>PG: 7. Execute SQL
     PG-->>API: Result rows (or error)
-    Note over API,OL: On SQL error → auto-retry once<br/>with the Postgres error fed back
-    API->>OL: 8. Question + SQL + rows<br/>"Summarize in French"
+    Note over API,OL: On SQL error: auto-retry once with the Postgres error fed back
+    API->>OL: 8. Summarize rows in French
     OL-->>API: Natural-language answer
-    API-->>FE: { answer, sql, rows, row_count, model }
-    FE-->>U: 9. Render answer<br/>+ collapsible "Voir le SQL"
+    API-->>FE: answer + sql + rows + row_count
+    FE-->>U: 9. Render answer + collapsible SQL
 ```
 
 ### Decision tree (what happens on errors)
 
 ```mermaid
-flowchart TD
-    Q[User question] --> CONN{Postgres<br/>connection OK?}
-    CONN -- no --> E1[400: connection error]
-    CONN -- yes --> INTRO[Introspect schema<br/>SELECT FROM information_schema]
-    INTRO --> P1[Prompt 1: NL → SQL<br/>temperature 0.0]
-    P1 --> EXTRACT[Extract SQL<br/>from fenced code block]
-    EXTRACT --> EMPTY{SQL<br/>found?}
-    EMPTY -- no --> E2[422: LLM didn't return SQL]
-    EMPTY -- yes --> SAFE{Passes safety filter?<br/>only SELECT/WITH<br/>no DROP/INSERT/etc}
-    SAFE -- no --> E3[400: SQL refused]
-    SAFE -- yes --> LIMIT[Auto-add LIMIT 200]
+graph TD
+    Q[User question] --> CONN{Connection OK}
+    CONN -->|no| E1[400 connection error]
+    CONN -->|yes| INTRO[Introspect information_schema]
+    INTRO --> P1[Prompt 1 - NL to SQL]
+    P1 --> EXTRACT[Extract SQL from fenced block]
+    EXTRACT --> EMPTY{SQL found}
+    EMPTY -->|no| E2[422 LLM returned no SQL]
+    EMPTY -->|yes| SAFE{Passes safety filter}
+    SAFE -->|no| E3[400 SQL refused]
+    SAFE -->|yes| LIMIT[Auto-add LIMIT 200]
     LIMIT --> EXEC1[Execute on Postgres]
-    EXEC1 --> ERR1{Postgres error?}
-    ERR1 -- no --> SUMM
-    ERR1 -- yes --> REPAIR[Prompt 2: repair<br/>show error + original SQL<br/>temperature 0.4]
-    REPAIR --> EXTRACT2[Extract SQL]
-    EXTRACT2 --> EXEC2[Execute again]
-    EXEC2 --> ERR2{Still errors?}
-    ERR2 -- yes --> E4[400: error + both attempts]
-    ERR2 -- no --> SUMM[Prompt 3: NL summary<br/>question + SQL + first 40 rows]
-    SUMM --> RET[200: answer + sql + rows + row_count]
+    EXEC1 --> ERR1{Postgres error}
+    ERR1 -->|no| SUMM[Prompt 3 - Summarize rows]
+    ERR1 -->|yes| REPAIR[Prompt 2 - Repair with error]
+    REPAIR --> EXEC2[Execute again]
+    EXEC2 --> ERR2{Still error}
+    ERR2 -->|yes| E4[400 error + both attempts]
+    ERR2 -->|no| SUMM
+    SUMM --> RET[200 answer + sql + rows]
 ```
 
 ### What the LLM actually sees
