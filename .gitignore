@@ -1,0 +1,57 @@
+# --- Secrets / credentials (NEVER commit) ---
+*.pem
+*.key
+*.pfx
+PROD_key.pem
+.env
+.env.local
+.env.*.local
+frontend/.env
+backend/.env
+
+# Helper / driver scripts created during dev — these contain plaintext passwords
+_*.py
+_*.sh
+schema_preview.json
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Node / Vite ---
+node_modules/
+dist/
+.vite/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- App-local artifacts ---
+backend/chroma/
+backend/iot_dashboard.db
+backend/plots/
+iot_dashboard.db
+iot_dashboarfd.db
+
+# --- Generated frontend builds / large binaries ---
+frontend/dist/
+frontend/public/videos/*.mp4
+frontend/public/videos/*.webm
+
+# --- DB dumps (may contain business data) ---
+oranextdb_schema_only_*.sql
+*.dump
+
+# --- Misc ---
+curl
+*.log

@@ -6,18 +6,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     middlewareMode: false,
-    // Proxy API and video requests to Flask backend
-    proxy: {
-      '/api': {
-        target: 'http://localhost:5000',
-        changeOrigin: true,
-      },
-      '/videos': {
-        target: 'http://localhost:5000',
-        changeOrigin: true,
-      }
-    },
-    // Ensure public files are served correctly
+    // Videos are served from frontend/public/videos/ by Vite — no proxy needed.
+    // /api/* calls use absolute URLs (see src/api.js baseURL), so no proxy needed either.
     fs: {
       allow: ['..']
     }

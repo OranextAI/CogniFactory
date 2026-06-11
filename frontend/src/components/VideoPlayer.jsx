@@ -201,18 +201,19 @@ export default function VideoPlayer({ title, videoPath, description }) {
                 return;
             }
 
-            // Create FormData for the frame
+            // Create FormData for the frame - use new endpoint with Ollama VLM
             const formData = new FormData();
-            formData.append('frame', frameBlob, 'frame.jpg');
-            formData.append('video_title', title);
-            formData.append('current_time', currentTime.toFixed(2));
+            formData.append('frame_image', frameBlob, 'frame.jpg');
+            formData.append('question', 'Analysez cette image de vidéourveillance. Décrivez ce que vous voyez en détail: objets, personnes, conditions éclairage, événements inhabituels, problèmes potentiels.');
 
-            // Send to backend for analysis
-            const backendURL = 'http://127.0.0.1:5000';
-            const response = await axios.post(`${backendURL}/api/analyze-video-frame`, formData, {
+            // Send to backend for analysis using Ollama VLM
+            // Use the VM IP or localhost depending on environment
+            const backendURL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+            const response = await axios.post(`${backendURL}/api/analyze-video-screenshot`, formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data'
-                }
+                },
+                timeout: 120000 // 2 minutes timeout for VLM processing
             });
 
             setAnalysisResult(response.data.analysis);
@@ -224,11 +225,13 @@ export default function VideoPlayer({ title, videoPath, description }) {
             if (error.response?.data?.error) {
                 errorMessage = error.response.data.error;
             } else if (error.response?.status === 500) {
-                errorMessage = '❌ Erreur serveur 500. Vérifiez les logs du backend.';
+                errorMessage = '❌ Erreur serveur 500. Vérifiez que Ollama est en cours d\'exécution sur la VM avec le modèle de vision (qwen2.5vl).';
             } else if (error.response?.status === 400) {
                 errorMessage = '❌ Erreur de requête 400. Le frame n\'a pas pu être envoyé.';
             } else if (error.code === 'ERR_NETWORK') {
-                errorMessage = '❌ Erreur réseau: impossible de contacter le serveur. Vérifiez que le backend est en cours d\'exécution.';
+                errorMessage = '❌ Erreur réseau: impossible de contacter le serveur. Vérifiez que le backend est en cours d\'exécution sur la VM.';
+            } else if (error.code === 'ECONNABORTED') {
+                errorMessage = '⏱️ Timeout: L\'analyse prend trop de temps. Le modèle VLM sur la VM peut être lent.';
             } else if (error.message) {
                 errorMessage = `❌ ${error.message}`;
             }
@@ -549,7 +552,7 @@ export default function VideoPlayer({ title, videoPath, description }) {
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, py: 4 }}>
                         <CircularProgress />
                         <Typography color="text.secondary">
-                            Mistral analyse le frame vidéo... Veuillez patienter...
+                            🤖 Ollama (qwen2.5vl) analyse le frame vidéo... Veuillez patienter...
                         </Typography>
                     </Box>
                 )}
