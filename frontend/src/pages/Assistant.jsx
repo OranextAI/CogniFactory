@@ -66,11 +66,25 @@ export default function Assistant() {
         setTestStatus(null);
     };
 
+    // Strip stray whitespace (incl. NBSP and zero-width chars) that crept in via paste
+    const sanitizeDbConfig = (cfg) => {
+        const clean = (v) => (typeof v === 'string'
+            ? v.replace(/[​-‍﻿]/g, '').trim()
+            : v);
+        return {
+            host: clean(cfg.host),
+            port: clean(cfg.port),
+            user: clean(cfg.user),
+            database: clean(cfg.database),
+            password: cfg.password,  // do NOT trim the password — spaces may be valid in it
+        };
+    };
+
     const handleTestConnection = async () => {
         setTesting(true);
         setTestStatus(null);
         try {
-            const { data } = await testDbConnection(dbConfig);
+            const { data } = await testDbConnection(sanitizeDbConfig(dbConfig));
             setTestStatus({
                 ok: true,
                 message: `Connecté à ${data.database} (${data.table_count} tables) · ${data.version}`,
@@ -99,7 +113,7 @@ export default function Assistant() {
 
         try {
             if (productionMode) {
-                const { data } = await askProduction(input, dbConfig);
+                const { data } = await askProduction(input, sanitizeDbConfig(dbConfig));
                 const aiMessage = {
                     role: 'model',
                     parts: [{ text: data.answer || '(réponse vide)' }],

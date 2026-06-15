@@ -331,16 +331,28 @@ def _open_user_pg(db_config, statement_timeout_ms=15000):
     Caller is responsible for closing. Never reuse this connection across requests.
     """
     cfg = db_config or {}
-    required = ("host", "user", "password", "database")
-    missing = [k for k in required if not cfg.get(k)]
+    # Defensive trim — paste from Slack/email often introduces leading/trailing whitespace
+    # and zero-width characters. Trim everything *except* the password (spaces may be valid).
+    def _clean(v):
+        if not isinstance(v, str):
+            return v
+        # Strip ASCII whitespace + common invisible chars (NBSP, ZWSP, ZWNJ, ZWJ, BOM).
+        return v.strip().strip(" ​‌‍﻿")
+    host = _clean(cfg.get("host"))
+    user = _clean(cfg.get("user"))
+    database = _clean(cfg.get("database"))
+    port_raw = _clean(cfg.get("port")) or 5432
+    password = cfg.get("password")
+    required = {"host": host, "user": user, "password": password, "database": database}
+    missing = [k for k, v in required.items() if not v]
     if missing:
         raise ValueError(f"db_config missing required fields: {missing}")
     kwargs = {
-        "host": cfg["host"],
-        "port": int(cfg.get("port") or 5432),
-        "user": cfg["user"],
-        "password": cfg["password"],
-        "dbname": cfg["database"],
+        "host": host,
+        "port": int(port_raw),
+        "user": user,
+        "password": password,
+        "dbname": database,
         "connect_timeout": 8,
     }
     if cfg.get("sslmode"):
