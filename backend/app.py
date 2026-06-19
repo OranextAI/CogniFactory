@@ -1372,7 +1372,28 @@ def diagnose_sensor():
         )
 
         if not sensor_data:
-            return jsonify({"error": "Aucune donnée disponible pour ce capteur."}), 400
+            # No events for this (device, attribute) in the last 180 days.
+            # Return 200 with a no-data diagnosis so frontends don't have to
+            # special-case an error path for a perfectly valid situation.
+            location_str = f", emplacement : {sensor['location']}" if sensor.get('location') else ""
+            return jsonify({
+                "diagnosis": (
+                    f"### Diagnostic — {sensor['name']}\n\n"
+                    f"Aucune mesure récente n'a été enregistrée pour ce capteur "
+                    f"(device #{sensor['iddevice']}, attribut « {sensor['type']} »{location_str}) "
+                    f"au cours des 180 derniers jours.\n\n"
+                    f"**Causes probables :**\n"
+                    f"- Le capteur n'est pas connecté ou ne transmet plus de données.\n"
+                    f"- Le capteur n'a jamais été activé en production.\n"
+                    f"- L'usine où il est déployé est temporairement à l'arrêt.\n\n"
+                    f"**Action recommandée :** vérifier la connectivité réseau et "
+                    f"l'alimentation du capteur, ou consulter un capteur opérationnel "
+                    f"pour comparaison."
+                ),
+                "sensor_id": sensor["id"],
+                "no_data": True,
+                "model": OLLAMA_MODEL,
+            }), 200
 
         values = []
         for r in reversed(sensor_data):
